@@ -1,4 +1,6 @@
 import uuid
+import os
+import logging
 
 from make87_messages.core.header_pb2 import Header
 from make87_messages.file.simple_file_pb2 import RelativePathFile
@@ -88,7 +90,7 @@ def main():
         output_file = f"{uuid.uuid4()}.mkv"
 
         # Build the ffmpeg command.
-        command = ["ffmpeg", "-rtsp_transport", "tcp", "-timeout", "5000000", "-i", url, "-c", "copy", output_file]
+        command = ["ffmpeg", "-rtsp_transport", "tcp", "-timeout", "2000000", "-i", url, "-c", "copy", output_file]
 
         try:
             # Execute the ffmpeg command.
@@ -96,9 +98,14 @@ def main():
             with open(output_file, "rb") as f:
                 file_bytes = f.read()
         except subprocess.CalledProcessError as e:
-            print(f"Error executing ffmpeg command: {command}")
-            print(f"Error details: {e}")
+            logging.error(f"Error executing ffmpeg command: {command}")
+            logging.error(f"Error details: {e}")
             file_bytes = None
+        else:
+            try:
+                os.remove(output_file)
+            except FileNotFoundError:
+                pass
 
         return RelativePathFile(
             header=make87.header_from_message(Header, message=message, append_entity_path="response"),
