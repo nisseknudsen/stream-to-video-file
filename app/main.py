@@ -1,24 +1,43 @@
 import uuid
+import threading
+import subprocess
+from urllib.parse import urlparse, urlunparse, urlencode, parse_qs
 
 from make87_messages.core.header_pb2 import Header
 from make87_messages.file.simple_file_pb2 import RelativePathFile
+from make87_messages.primitive.bool_pb2 import Bool
 from make87_messages.transport.rtsp_pb2 import RTSPRequest
 
 import make87
-import subprocess
-from urllib.parse import urlparse, urlunparse, urlencode
+
+
+def transform_url(url: str) -> str:
+    """
+    Transform the given URL into a file path in the format:
+      {track}/{starttime}_{endtime}.mkv
+    """
+    url = url.replace("&amp;", "&")
+    parsed_url = urlparse(url)
+    path_parts = parsed_url.path.split("/")
+    if len(path_parts) < 4:
+        raise ValueError("Invalid URL structure; cannot find track ID.")
+
+    track = path_parts[3]
+    query_params = parse_qs(parsed_url.query)
+    starttime = query_params.get("starttime", [None])[0]
+    endtime = query_params.get("endtime", [None])[0]
+
+    if not starttime or not endtime:
+        raise ValueError("Missing starttime or endtime in URL.")
+
+    return f"{track}/{starttime}_{endtime}.mkv"
 
 
 def insert_credentials(url: str, username: str, password: str) -> str:
     """
     Insert credentials into the given URL.
-    For example, turns:
-      rtsp://host/path
-    into:
-      rtsp://username:password@host/path
     """
     parsed = urlparse(url)
-    # Build the new netloc with credentials.
     netloc = f"{username}:{password}@{parsed.hostname}"
     if parsed.port:
         netloc += f":{parsed.port}"
@@ -29,26 +48,15 @@ def insert_credentials(url: str, username: str, password: str) -> str:
 def build_url(endpoint) -> str:
     """
     Build a URL from an Endpoint message.
-
-    The Endpoint message has:
-      - protocol: e.g. "rtsp"
-      - host: the server IP or domain name.
-      - port: the port number.
-      - path: the resource path.
-      - query_params: a map of query parameters.
     """
     protocol = endpoint.protocol
     host = endpoint.host
     port = endpoint.port
     path = endpoint.path
-    # Ensure the path starts with a slash.
     if not path.startswith("/"):
         path = "/" + path
 
-    # Encode query parameters if they exist.
     query = urlencode(endpoint.query_params) if endpoint.query_params else ""
-
-    # Build the network location. Only include port if provided.
     netloc = f"{host}:{port}" if port else host
 
     return str(urlunparse((protocol, netloc, path, "", query, "")))
@@ -56,12 +64,32 @@ def build_url(endpoint) -> str:
 
 def extract_path_and_query(url: str) -> str:
     parsed = urlparse(url)
-    # Combine the path and query string.
     resource = parsed.path
     if parsed.query:
         resource += "?" + parsed.query
-    # Optionally, remove the leading slash if you don't want it.
     return resource.lstrip("/")
+
+
+def ffmpeg_thread(url: str, output_file: str, message: RTSPRequest, file_release_endpoint):
+    """
+    Function to run ffmpeg in a separate thread and handle file upload after processing.
+    """
+    command = ["ffmpeg", "-rtsp_transport", "tcp", "-timeout", "5000000", "-i", url, "-c", "copy", output_file]
+    try:
+        subprocess.run(command, check=True)
+        with open(output_file, "rb") as f:
+            file_bytes = f.read()
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing ffmpeg command: {command}")
+        print(f"Error details: {e}")
+        file_bytes = None
+
+    upload_file = RelativePathFile(
+        header=make87.header_from_message(Header, message=message, append_entity_path="upload"),
+        data=file_bytes,
+        path=transform_url(url),
+    )
+    file_release_endpoint.request(upload_file)
 
 
 def main():
@@ -70,11 +98,13 @@ def main():
         name="RTSP_RECORDING_JOB", requester_message_type=RTSPRequest, provider_message_type=RelativePathFile
     )
 
-    def callback(message: RTSPRequest) -> RelativePathFile:
-        # Build URL from the endpoint message fields.
-        url = build_url(message.endpoint)
+    file_release_endpoint = make87.get_requester(
+        name="FILE_UPLOAD", requester_message_type=RelativePathFile, provider_message_type=Bool
+    )
 
-        # Inject authentication credentials if provided.
+    def callback(message: RTSPRequest) -> Bool:
+        # Build the URL and inject credentials if available.
+        url = build_url(message.endpoint)
         if message.HasField("basic_auth"):
             username = message.basic_auth.username
             password = message.basic_auth.password
@@ -84,26 +114,17 @@ def main():
             password = message.digest_auth.password
             url = insert_credentials(url, username, password)
 
-        # Specify the output file name.
+        # Create a unique file name.
         output_file = f"{uuid.uuid4()}.mkv"
 
-        # Build the ffmpeg command.
-        command = ["ffmpeg", "-rtsp_transport", "tcp", "-timeout", "5000000", "-i", url, "-c", "copy", output_file]
+        # Launch the ffmpeg process in a separate thread.
+        thread = threading.Thread(target=ffmpeg_thread, args=(url, output_file, message, file_release_endpoint))
+        thread.start()
 
-        try:
-            # Execute the ffmpeg command.
-            subprocess.run(command, check=True)
-            with open(output_file, "rb") as f:
-                file_bytes = f.read()
-        except subprocess.CalledProcessError as e:
-            print(f"Error executing ffmpeg command: {command}")
-            print(f"Error details: {e}")
-            file_bytes = None
-
-        return RelativePathFile(
-            header=make87.header_from_message(Header, message=message, append_entity_path="response"),
-            data=file_bytes,
-            path=output_file,
+        # Return success immediately.
+        return Bool(
+            header=make87.header_from_message(Header, message=message, append_entity_path="success"),
+            value=True,
         )
 
     provider.provide(callback)

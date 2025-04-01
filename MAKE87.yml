@@ -5,3 +5,7 @@ provider_endpoints:
   - name: RTSP_RECORDING_JOB
     requester_message_type: make87_messages.transport.rtsp.RTSPRequest
     provider_message_type: make87_messages.file.simple_file.RelativePathFile
+requester_endpoints:
+  - name: FILE_UPLOAD
+    requester_message_type: make87_messages.file.simple_file.RelativePathFile
+    provider_message_type: make87_messages.primitive.bool.Bool
