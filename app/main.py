@@ -102,7 +102,7 @@ def ffmpeg_thread(url: str, output_file: str, message: RTSPRequest, file_release
 def main():
     make87.initialize()
     provider = make87.get_provider(
-        name="RTSP_RECORDING_JOB", requester_message_type=RTSPRequest, provider_message_type=RelativePathFile
+        name="RTSP_RECORDING_JOB", requester_message_type=RTSPRequest, provider_message_type=Bool
     )
 
     file_release_endpoint = make87.get_requester(
