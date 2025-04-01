@@ -1,4 +1,6 @@
 import uuid
+import os
+import logging
 import threading
 import subprocess
 from urllib.parse import urlparse, urlunparse, urlencode, parse_qs
@@ -74,15 +76,20 @@ def ffmpeg_thread(url: str, output_file: str, message: RTSPRequest, file_release
     """
     Function to run ffmpeg in a separate thread and handle file upload after processing.
     """
-    command = ["ffmpeg", "-rtsp_transport", "tcp", "-timeout", "5000000", "-i", url, "-c", "copy", output_file]
+    command = ["ffmpeg", "-rtsp_transport", "tcp", "-timeout", "2000000", "-i", url, "-c", "copy", output_file]
     try:
         subprocess.run(command, check=True)
         with open(output_file, "rb") as f:
             file_bytes = f.read()
     except subprocess.CalledProcessError as e:
-        print(f"Error executing ffmpeg command: {command}")
-        print(f"Error details: {e}")
+        logging.error(f"Error executing ffmpeg command: {command}")
+        logging.error(f"Error details: {e}")
         file_bytes = None
+    else:
+        try:
+            os.remove(output_file)
+        except FileNotFoundError:
+            pass
 
     upload_file = RelativePathFile(
         header=make87.header_from_message(Header, message=message, append_entity_path="upload"),
