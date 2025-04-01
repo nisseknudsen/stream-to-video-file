@@ -1,9 +1,9 @@
 import uuid
 import os
 import logging
-import threading
 import subprocess
 from urllib.parse import urlparse, urlunparse, urlencode, parse_qs
+from concurrent.futures import ThreadPoolExecutor
 
 from make87_messages.core.header_pb2 import Header
 from make87_messages.file.simple_file_pb2 import RelativePathFile
@@ -11,6 +11,9 @@ from make87_messages.primitive.bool_pb2 import Bool
 from make87_messages.transport.rtsp_pb2 import RTSPRequest
 
 import make87
+
+# Set the maximum number of concurrent ffmpeg processing threads.
+MAX_WORKERS = 5
 
 
 def transform_url(url: str) -> str:
@@ -74,7 +77,7 @@ def extract_path_and_query(url: str) -> str:
 
 def ffmpeg_thread(url: str, output_file: str, message: RTSPRequest, file_release_endpoint):
     """
-    Function to run ffmpeg in a separate thread and handle file upload after processing.
+    Function to run ffmpeg in a thread and handle file upload after processing.
     """
     command = ["ffmpeg", "-rtsp_transport", "tcp", "-timeout", "2000000", "-i", url, "-c", "copy", output_file]
     try:
@@ -101,6 +104,10 @@ def ffmpeg_thread(url: str, output_file: str, message: RTSPRequest, file_release
 
 def main():
     make87.initialize()
+
+    # Create a thread pool executor with a fixed maximum number of worker threads.
+    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
     provider = make87.get_provider(
         name="RTSP_RECORDING_JOB", requester_message_type=RTSPRequest, provider_message_type=Bool
     )
@@ -124,9 +131,8 @@ def main():
         # Create a unique file name.
         output_file = f"{uuid.uuid4()}.mkv"
 
-        # Launch the ffmpeg process in a separate thread.
-        thread = threading.Thread(target=ffmpeg_thread, args=(url, output_file, message, file_release_endpoint))
-        thread.start()
+        # Queue the ffmpeg job in the thread pool.
+        executor.submit(ffmpeg_thread, url, output_file, message, file_release_endpoint)
 
         # Return success immediately.
         return Bool(
